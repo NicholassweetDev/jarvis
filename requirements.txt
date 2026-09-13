@@ -1,0 +1,5 @@
+faster-whisper
+edge-tts
+fastapi
+uvicorn[standard]
+numpy

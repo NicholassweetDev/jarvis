@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>J.A.R.V.I.S.</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --c: 0, 200, 255; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #02060c; color: #bfefff; overflow: hidden;
+    font-family: "Rajdhani", "Orbitron", "Segoe UI", system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; cursor: pointer; }
+  #title { position: fixed; top: 22px; width: 100%; text-align: center; letter-spacing: .6em;
+    font-size: 15px; color: rgba(var(--c), .75); text-shadow: 0 0 12px rgba(var(--c), .8); pointer-events: none; }
+  #status { position: fixed; top: calc(50% + min(24vh, 210px)); width: 100%; text-align: center;
+    letter-spacing: .35em; font-size: 12px; text-transform: uppercase; color: rgba(var(--c), .9); pointer-events: none; }
+  #log { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); width: min(720px, 92vw);
+    max-height: 22vh; overflow-y: auto; font-size: 15px; line-height: 1.45; mask-image: linear-gradient(transparent, #000 30%); }
+  #log div { margin: 6px 0; }
+  #log .user { color: #8fa9b5; text-align: right; }
+  #log .user::before { content: "VOCÊ  "; font-size: 10px; letter-spacing: .2em; opacity: .6; }
+  #log .jarvis { color: #d9f7ff; }
+  #log .jarvis::before { content: "JARVIS  "; font-size: 10px; letter-spacing: .2em; color: rgb(var(--c)); }
+  #log .action { color: #ffc46b; font-family: ui-monospace, monospace; font-size: 12px; opacity: .8; }
+  #log .action::before { content: "⚙ "; }
+  form { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); width: min(720px, 92vw); display: flex; gap: 8px; }
+  input { flex: 1; background: rgba(var(--c), .06); border: 1px solid rgba(var(--c), .3); color: #dff;
+    padding: 10px 14px; border-radius: 22px; font: inherit; font-size: 15px; outline: none; }
+  input:focus { border-color: rgba(var(--c), .8); box-shadow: 0 0 14px rgba(var(--c), .25); }
+  #hint { position: fixed; top: 48px; width: 100%; text-align: center; font-size: 11px; color: #4d6b78; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="title">J.A.R.V.I.S.</div>
+<div id="hint">clique no círculo para ativar/pausar o microfone · Esc interrompe a fala</div>
+<div id="status">iniciando</div>
+<div id="log"></div>
+<form id="f"><input id="txt" placeholder="ou digite aqui e aperte Enter..." autocomplete="off"></form>
+
+<script>
+// ------------------------------------------------------------------ estado
+const COLORS = { idle: [0,200,255], listening: [60,160,255], hearing: [120,220,255],
+                 transcribing: [140,120,255], thinking: [255,170,40], speaking: [0,230,255], muted: [90,100,110], offline: [255,60,60] };
+const LABELS = { idle: "aguardando", listening: "ouvindo", hearing: "ouvindo...", transcribing: "processando",
+                 thinking: "pensando", speaking: "falando", muted: "microfone pausado", offline: "desconectado" };
+let state = "offline", level = 0, smooth = 0, color = [...COLORS.offline];
+let micOn = true, speaking = false, busy = false, wakeWord = false;
+const statusEl = document.getElementById("status"), logEl = document.getElementById("log");
+
+function setState(s) {
+  if (!micOn && (s === "idle" || s === "listening")) s = "muted";
+  state = s; statusEl.textContent = LABELS[s] || s;
+  if (s === "idle" && wakeWord) statusEl.textContent = 'diga "Jarvis..."';
+}
+function log(cls, text) {
+  const d = document.createElement("div"); d.className = cls; d.textContent = text;
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.children.length > 40) logEl.firstChild.remove();
+}
+
+// ------------------------------------------------------------------ websocket
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { busy = false; setState("idle"); };
+  ws.onclose = () => { setState("offline"); setTimeout(connect, 1500); };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "config") { wakeWord = m.wake_word; setState(state); }
+    else if (m.type === "state") { busy = m.state !== "idle"; setState(m.state); }
+    else if (m.type === "user") log("user", m.text);
+    else if (m.type === "action") log("action", m.text);
+    else if (m.type === "speak") { log("jarvis", m.text); playAudio(m.audio); }
+  };
+}
+
+// ------------------------------------------------------------------ áudio de saída (voz do Jarvis)
+let actx, outAnalyser, currentSrc;
+function ensureCtx() {
+  if (!actx) { actx = new AudioContext(); outAnalyser = actx.createAnalyser(); outAnalyser.fftSize = 512;
+               outAnalyser.connect(actx.destination); }
+  if (actx.state === "suspended") actx.resume();
+}
+async function playAudio(b64) {
+  if (!b64) { busy = false; setState("idle"); return; }
+  ensureCtx();
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const buf = await actx.decodeAudioData(bytes.buffer);
+  stopAudio();
+  const src = actx.createBufferSource(); src.buffer = buf; src.connect(outAnalyser);
+  currentSrc = src; speaking = true; setState("speaking");
+  src.onended = () => { if (currentSrc === src) { speaking = false; busy = false; currentSrc = null;
+    cooldownUntil = performance.now() + 400; setState("idle"); } };
+  src.start();
+}
+function stopAudio() { if (currentSrc) { try { currentSrc.stop(); } catch {} } }
+
+// ------------------------------------------------------------------ microfone + detecção de fala (VAD)
+const SR = 16000, PREROLL = 0.4 * SR, SILENCE_MS = 900, MIN_SPEECH_MS = 350, MAX_SEC = 20;
+let micCtx, micAnalyser, ring = [], recording = false, rec = [], speechStart = 0, lastVoice = 0,
+    noise = 0.01, cooldownUntil = 0, micLevel = 0;
+
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  micCtx = new AudioContext({ sampleRate: SR });
+  const src = micCtx.createMediaStreamSource(stream);
+  micAnalyser = micCtx.createAnalyser(); micAnalyser.fftSize = 512; src.connect(micAnalyser);
+  const proc = micCtx.createScriptProcessor(2048, 1, 1);
+  src.connect(proc); proc.connect(micCtx.destination);
+  proc.onaudioprocess = (e) => onChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+}
+
+function onChunk(chunk) {
+  let sum = 0; for (const v of chunk) sum += v * v;
+  const rms = Math.sqrt(sum / chunk.length);
+  micLevel = rms;
+  const now = performance.now();
+  const blocked = !micOn || speaking || busy || now < cooldownUntil || !ws || ws.readyState !== 1;
+  if (blocked) { recording = false; rec = []; ring = []; return; }
+
+  if (!recording) noise = noise * 0.97 + rms * 0.03;         // aprende o ruído de fundo
+  const threshold = Math.max(0.012, noise * 2.6);
+  const voiced = rms > threshold;
+
+  if (!recording) {
+    ring.push(chunk); let n = ring.reduce((a, c) => a + c.length, 0);
+    while (n > PREROLL) { n -= ring[0].length; ring.shift(); }
+    if (voiced) { recording = true; rec = [...ring]; ring = []; speechStart = now; lastVoice = now; setState("hearing"); }
+    return;
+  }
+  rec.push(chunk);
+  if (voiced) lastVoice = now;
+  const dur = now - speechStart;
+  if (now - lastVoice > SILENCE_MS || dur > MAX_SEC * 1000) {
+    recording = false;
+    const spoke = lastVoice - speechStart;
+    if (spoke >= MIN_SPEECH_MS) {
+      const total = rec.reduce((a, c) => a + c.length, 0), out = new Float32Array(total);
+      let o = 0; for (const c of rec) { out.set(c, o); o += c.length; }
+      busy = true; ws.send(out.buffer); setState("transcribing");
+    } else setState("idle");
+    rec = [];
+  }
+}
+
+// ------------------------------------------------------------------ desenho do círculo
+const cv = document.getElementById("cv"), g = cv.getContext("2d");
+let W, H, DPR;
+function resize() { DPR = devicePixelRatio || 1; W = cv.width = innerWidth * DPR; H = cv.height = innerHeight * DPR; }
+addEventListener("resize", resize); resize();
+
+const particles = Array.from({ length: 140 }, () => ({ a: Math.random() * Math.PI * 2,
+  r: 0.9 + Math.random() * 0.9, s: (Math.random() - 0.5) * 0.004, z: Math.random() }));
+const freq = new Uint8Array(256);
+
+function currentLevel() {
+  if (state === "speaking" && outAnalyser) {
+    outAnalyser.getByteTimeDomainData(freq);
+    let s = 0; for (const v of freq) { const x = (v - 128) / 128; s += x * x; }
+    return Math.min(1, Math.sqrt(s / freq.length) * 4);
+  }
+  if (state === "hearing" || state === "listening" || state === "idle") return Math.min(1, micLevel * 10);
+  return 0;
+}
+
+function frame(t) {
+  const target = COLORS[state] || COLORS.idle;
+  for (let i = 0; i < 3; i++) color[i] += (target[i] - color[i]) * 0.06;
+  const [r, gg, b] = color.map(Math.round), rgb = (a) => `rgba(${r},${gg},${b},${a})`;
+  document.documentElement.style.setProperty("--c", `${r}, ${gg}, ${b}`);
+
+  level = currentLevel(); smooth += (level - smooth) * 0.25;
+  const cx = W / 2, cy = H / 2, R = Math.min(W, H) * 0.17;
+  const breathe = Math.sin(t / 900) * 0.02, pulse = 1 + breathe + smooth * 0.35;
+
+  g.clearRect(0, 0, W, H);
+  // brilho de fundo
+  const glow = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 3.2);
+  glow.addColorStop(0, rgb(0.18 + smooth * 0.25)); glow.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = glow; g.fillRect(0, 0, W, H);
+
+  // partículas orbitando
+  for (const p of particles) {
+    p.a += p.s * (1 + smooth * 4) * (state === "thinking" ? 3 : 1);
+    const pr = R * (1.3 + p.r * 0.9 + smooth * 0.5 * p.z);
+    g.fillStyle = rgb(0.25 + 0.5 * p.z);
+    g.beginPath(); g.arc(cx + Math.cos(p.a) * pr, cy + Math.sin(p.a) * pr, (1 + p.z * 1.6) * DPR, 0, Math.PI * 2); g.fill();
+  }
+
+  // anéis de HUD girando
+  g.lineCap = "round";
+  const rings = [ [1.55, 0.0006, [[0, 1.2], [1.6, 2.6], [3.4, 5.6]], 2],
+                  [1.38, -0.0011, [[0.3, 0.9], [2.2, 3.9], [4.5, 5.2]], 3],
+                  [1.72, 0.0004, [[0, 6.28]], 0.8] ];
+  const spin = state === "thinking" || state === "transcribing" ? 4 : 1;
+  for (const [rr, sp, arcs, lw] of rings) {
+    g.strokeStyle = rgb(0.55); g.lineWidth = lw * DPR;
+    for (const [a0, a1] of arcs) { g.beginPath();
+      g.arc(cx, cy, R * rr * (1 + smooth * 0.12), a0 + t * sp * spin, a1 + t * sp * spin); g.stroke(); }
+  }
+  // marcações
+  g.strokeStyle = rgb(0.35); g.lineWidth = 1.5 * DPR;
+  for (let i = 0; i < 72; i++) {
+    const a = i / 72 * Math.PI * 2 - t * 0.0002, r1 = R * 1.86, r2 = r1 + (i % 6 ? 5 : 12) * DPR;
+    g.beginPath(); g.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); g.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2); g.stroke();
+  }
+
+  // onda circular que reage ao áudio
+  g.beginPath();
+  const N = 128;
+  for (let i = 0; i <= N; i++) {
+    const a = i / N * Math.PI * 2;
+    const wob = Math.sin(a * 6 + t / 180) * Math.sin(a * 3 - t / 300) * smooth * R * 0.22
+              + Math.sin(a * 11 + t / 90) * smooth * R * 0.06;
+    const rr = R * pulse + wob;
+    const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.closePath();
+  const core = g.createRadialGradient(cx, cy, 0, cx, cy, R * pulse);
+  core.addColorStop(0, rgb(0.95)); core.addColorStop(0.35, rgb(0.45)); core.addColorStop(1, rgb(0.08));
+  g.fillStyle = core; g.shadowColor = rgb(1); g.shadowBlur = (30 + smooth * 60) * DPR; g.fill();
+  g.shadowBlur = 0; g.strokeStyle = rgb(0.9); g.lineWidth = 2 * DPR; g.stroke();
+
+  // núcleo
+  g.fillStyle = "rgba(255,255,255,0.85)";
+  g.beginPath(); g.arc(cx, cy, R * (0.12 + smooth * 0.08), 0, Math.PI * 2); g.fill();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ------------------------------------------------------------------ controles
+cv.addEventListener("click", () => { ensureCtx(); micCtx?.resume(); micOn = !micOn; setState(micOn ? "idle" : "muted"); });
+addEventListener("keydown", (e) => { if (e.key === "Escape") { stopAudio(); } });
+document.getElementById("f").addEventListener("submit", (e) => {
+  e.preventDefault(); ensureCtx();
+  const inp = document.getElementById("txt"), text = inp.value.trim();
+  if (!text || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: "text", text })); inp.value = ""; busy = true;
+});
+
+connect();
+startMic().catch((err) => { micOn = false; setState("muted"); log("action", "Microfone indisponível: " + err.message); });
+addEventListener("pointerdown", () => { ensureCtx(); micCtx?.resume(); }, { once: true });
+</script>
+</body>
+</html>
