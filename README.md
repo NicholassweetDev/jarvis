@@ -1,5 +1,9 @@
 # J.A.R.V.I.S.
 
+<p align="center">
+  <img src="docs/demo.gif" width="600" alt="O Jarvis ouve &quot;Jarvis, abre a calculadora e aumenta o volume&quot;, pensa, abre a calculadora, aumenta o volume e responde falando, com o círculo reagindo à voz">
+</p>
+
 Assistente de voz que roda no seu PC. Você fala, ele entende (Whisper, local), pensa com o Claude e
 responde falando (voz Antonio), com o círculo animado reagindo à voz. Ele também controla o
 computador: abre e fecha apps, abre sites e pastas, mexe no volume e na música, bloqueia a tela,
@@ -8,10 +12,21 @@ roda comandos e pesquisa na internet.
 O "cérebro" é o Claude Code logado com a sua assinatura do Claude, então não precisa de chave de API.
 Cada pedido conta no limite de uso da sua assinatura.
 
-## Como usar
+## Quick start
 
-1. Tenha o Claude Code instalado e logado (rode `claude` no terminal uma vez para fazer login).
-2. Rode `./jarvis.sh`. A janela do Jarvis abre e ele já está ouvindo.
+Precisa de Linux com Python 3, Chromium e o [Claude Code](https://claude.com/claude-code) instalado e logado
+(rode `claude` no terminal uma vez para fazer login). O ffmpeg é opcional e dá o efeito metálico na voz.
+
+```bash
+git clone https://github.com/NicholassweetDev/jarvis.git
+cd jarvis
+./jarvis.sh
+```
+
+Na primeira vez o script cria o ambiente Python, instala as dependências e baixa o modelo do Whisper.
+Depois a janela do Jarvis abre e ele já está ouvindo.
+
+## Como usar
 
 Exemplos: "abre a calculadora", "fecha o Firefox", "aumenta o volume", "próxima música",
 "abre o YouTube", "abre minha pasta de downloads", "como está o tempo em São Paulo?",
@@ -37,3 +52,4 @@ Exemplos: "abre a calculadora", "fecha o Firefox", "aumenta o volume", "próxima
 - `tools.py`: o que o Jarvis pode fazer no PC (adicione novas ferramentas aqui)
 - `tools_cli.py`: permite ao Claude Code acionar essas ferramentas pelo terminal
 - `static/index.html`: a interface com o círculo
+- `docs/`: o GIF de demonstração e a imagem de social preview do repositório
