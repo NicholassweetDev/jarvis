@@ -53,3 +53,7 @@ Exemplos: "abre a calculadora", "fecha o Firefox", "aumenta o volume", "próxima
 - `tools_cli.py`: permite ao Claude Code acionar essas ferramentas pelo terminal
 - `static/index.html`: a interface com o círculo
 - `docs/`: o GIF de demonstração e a imagem de social preview do repositório
+
+## Licença
+
+[MIT](LICENSE): pode usar, modificar e distribuir, desde que mantenha o aviso de copyright.
